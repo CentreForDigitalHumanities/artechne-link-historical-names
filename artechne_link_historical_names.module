@@ -1,0 +1,470 @@
+<?php
+
+error_reporting(E_ALL);
+ini_set('display_errors', TRUE);
+ini_set('display_startup_errors', TRUE);
+
+/**
+ * This is a custom module built for the Artechne project.
+ * It allows users (with the right permissions) to semi-automatically link historical names to a record.
+ * Users provide the node id for a Record, and the script will find Historical Names if they are tagged 
+ * (e.g. 'texttexttext './historical name./' texttexttext). After collecting all tagged terms, it searches for 
+ * the database for Historical Names with a title that contain this term.
+ * If it finds an exact match, a relation between the Record and the Historical Name is added.
+ * If an ambiguous result is found (i.e. a match but not an exact match), the user is asked for help to disambiguate.
+ * If no results are found, a Historical Name for the current term is created and the relation added.
+ * 
+ * The module consists of a multistep form of three main steps.
+ * 1) A form to collect the node id.
+ * 2) A form to ask the user for help if needed
+ * 3) A form to end the task (and possibly restart)
+ * 
+ * Note that the Historical Names found in the transcription text are stored in a session variable, and
+ * a loop is created over these terms. As a result step / form 2 can occur multiple times.
+ * The gist of the work to maintain this loop is done in the main form function and the form submit function.
+ *
+ */
+
+function tag() {
+  return './';
+}
+
+/**
+ * Implements hook_menu().
+ * Adds a tab to the content screen screen in the admin. 
+ */
+function artechne_link_historical_names_menu() {
+  $items = array();
+
+  $items['admin/content/artechne_link_historical_names'] = array(
+    'title' => 'Link historical names',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('artechne_link_historical_names_form'),
+    'access arguments' => array('link historical names'),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+/**
+ * The main form function.
+ */
+function artechne_link_historical_names_form($form, &$form_state) {
+  // Test if this is a new run of the form
+  if (!isset($form_state['storage']['state'])) {    
+    // If it is make sure the session storage is reset
+    if (isset($_SESSION['storage'])) {
+      _artechne_link_historical_names_reset_session();
+    }    
+    
+    $form = _artechne_link_historical_names_form_collect_node_id($form_state);
+  }
+  else {
+    if ($form_state['storage']['state'] == 'start_looping' | $form_state['storage']['state'] == 'continue_looping') {
+      
+      for ($i = $_SESSION['storage']['current_index']; $i <= count($_SESSION['storage']['current_transcription']); $i++) {
+        $_SESSION['storage']['current_index'] = $i;
+        
+        if ($_SESSION['storage']['current_index'] == count($_SESSION['storage']['current_transcription'])) {
+          $form_state['storage']['state'] = 'stop_looping';
+          break;
+        }
+        
+        $current_word = $_SESSION['storage']['current_transcription'][$i];
+
+        if (in_array(strtolower($current_word), $_SESSION['storage']['words_already_checked'])) {
+          continue;
+        }
+        else {
+         array_push($_SESSION['storage']['words_already_checked'], strtolower($current_word));
+
+          $matching_historical_names = 
+            _artechne_link_historical_names_get_historical_names($current_word); 
+            
+          if (count($matching_historical_names) == 0) {
+            $hn_node_id = _artechne_link_historical_names_add_new_historical_name($current_word);
+            _artechne_link_historical_names_add_relation($current_word, $hn_node_id);
+            continue;
+          }
+          
+          if (count($matching_historical_names) == 1) {
+            // this one result is in the array with its node id as index, e.g.: 
+            // $matching_historical_names['899015'];
+            // therefore the loop
+            $hn_node_id = 0;
+
+            foreach ($matching_historical_names as $mhn ) {
+              $hn_node_id = $mhn->nid;
+            }
+            $hn_node = node_load($hn_node_id);
+
+            if (_artechne_link_historical_names_strip_whitespaces(strtolower($hn_node->title)) == 
+                 strtolower($current_word)) {
+              _artechne_link_historical_names_add_relation($current_word, $hn_node_id); 
+              continue;       
+            }
+            else {
+              $form = _artechne_link_historical_names_form_ambiguous_result($form_state, $current_word, $matching_historical_names);
+              break;
+            }
+          }
+
+          if (count($matching_historical_names) > 1) {            
+            $form = _artechne_link_historical_names_form_ambiguous_result($form_state, $current_word, $matching_historical_names);
+            break;
+          }
+        }
+      }
+    }
+
+    if ($form_state['storage']['state'] == 'stop_looping') {
+      _artechne_link_historical_names_remove_tags();
+      $form = _artechne_link_historical_names_form_end($form_state);
+    }
+  }
+
+  return $form;
+}
+
+/**
+ * The first form, which collects the id of the node, i.e. the Record to link Historical Names to.
+ */
+function _artechne_link_historical_names_form_collect_node_id($form_state) {
+  $form = array();
+
+  $form['explanation'] = array(
+    '#markup' => '<h3>Welcome</h3><p>Here you can link historical names to records. Please provide the \'node id\' of the record'  
+                .' you wish to link historical names to. You can find the node id in the URL (i.e. a typical address looks like this:'
+                .' \'http://artechne.hum.uu.nl/node/86488\' where the number at the end is the node id.</p>'
+                .'<p>Note that this module will search through the transcription of the record found. It will look for terms'
+                .' surrounded by the tag \'' . tag() . '\' (i.e. a historical name in a text should look like this:'
+                .' \'textexttext ' . tag() . 'historical name' . tag() . ' texttexttext\'). Subsequently, it will search for historical names that'
+                .' contain the tagged word(s) in its title. If only one result is found and this matches exactly (cases are ignored), a relation'
+                .' will be added. If multiple matches are found, the module will ask for help with disambiguation. In case no'
+                .' matches with any historical names are found, a new historical name will be added, and a relation created.</p>'
+                .'<p>At the very end, the module will summarize the actions it has performed, with links to the nodes involved.' 
+  );
+
+  $form['node_id'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Node id'),
+    '#description' => t('The id of the record you want to add historical names to.'),
+    '#required' => TRUE,
+  );
+
+  $form['submit_node_id'] = array(
+    '#type' => 'submit',
+    '#value' => t('Link historical names!'),
+  );
+
+  return $form;
+}
+
+/**
+ * The second form, which may be repeatedly posted.
+ * This asks the user for help with disambiguation of the results found.
+ */
+function _artechne_link_historical_names_form_ambiguous_result($form_state, $current_word, $matching_historical_names) {
+  $form = array();
+
+  $form['some_text'] = array(
+    '#markup' => '<h3>Please help me</h3>'
+  );
+
+  $form['historical_names'] = array(
+    '#type' => 'checkboxes',
+    '#options' => 
+      _artechne_link_historical_names_get_ambiguous_result_checkboxes($matching_historical_names)
+    ,
+    '#title' => t("Which of these is a match for '" . $current_word . "'?"),
+    '#validated' => TRUE
+  );
+
+  $form['submit_disambiguation'] = array(
+    '#type' => 'submit',
+    '#value' => t('Create links'),
+  );
+
+  return $form;
+}
+
+/**
+ * Returns the actual text displayed on the _artechne_link_historical_names_form_ambiguous_result form
+ */
+function _artechne_link_historical_names_get_ambiguous_result_checkboxes($matching_historical_names) {
+  $checkboxes = array();
+  $format = "%s (<a target='_blank' href='/node/%s'>%s</a>)";
+  
+  foreach ($matching_historical_names as $mhn) {
+    $node = node_load($mhn->nid);
+    $checkboxes[$mhn->nid] = sprintf($format, $node->title, $mhn->nid, $mhn->nid);
+  }
+  
+  return $checkboxes;
+}
+
+/**
+ * The third and final form
+ */
+function _artechne_link_historical_names_form_end($form_state) {
+  $form = array();
+  
+  $form['header'] = array(
+    '#markup' => '<h1>This is the end</h1>'
+  );
+
+  $form['explanation'] = array(
+    '#markup' => '<p>Linking historical names completed succesfully!. Please find a summary of the actions performed below.'
+                .' Note that the errors above can be ignored: all was handled and saved correctly. The links were added'
+                .' and the tags were removed from the transcription of the record.'
+  ); 
+
+  $form['header_his_names'] = array(
+    '#markup' => '<p><b>Historical Names added:</b></p>'
+  );
+
+  $form['hns_added'] = array(
+    '#markup' => _artechne_link_historical_names_form_end_get_added_historical_names()
+  );
+
+
+  $form['header2'] = array(
+    '#markup' => '<br /><p><b>Relations added:</b></p>'
+  );
+
+  
+  $form['rel_added'] = array(
+    '#markup' => _artechne_link_historical_names_form_end_get_added_relations()
+  );
+  
+  $form['header3'] = array(
+    '#markup' => '<br /><p><b>Another record?</b></p>'
+  );
+
+  $form['submit_restart'] = array(
+    '#type' => 'submit',
+    '#value' => t('Yes'),
+  );
+
+  return $form;
+}
+
+function _artechne_link_historical_names_form_end_get_added_relations() {
+  return implode("\n", $_SESSION['storage']['relations_created']);
+}
+
+function _artechne_link_historical_names_form_end_get_added_historical_names() {
+  return implode("\n", $_SESSION['storage']['historical_names_created']);
+}
+
+/**
+ * Implementation of the form_validate function.
+ * Checks if the node exists and is a Record.
+ */
+function artechne_link_historical_names_form_validate($form, &$form_state) {
+  if ($form_state['clicked_button']['#id'] == 'edit-submit-node-id') {
+    $node_id = ($form['node_id']['#value']);
+    $node = node_load($node_id);
+
+    if (!$node) {
+      form_set_error('node_id', t('There is no node with id ' . $node_id));
+    }
+    elseif ($node->type != 'recipes') {
+      form_set_error('node_id', t('The node must be a Record'));
+    }
+  }
+}
+
+/**
+ * Implementation of the form_submit function.
+ * This function checks which of the steps was submitted (on the basis of the button clicked),
+ * performs necessary actions and makes sure the correct state is set to continue or end the loop.
+ */
+function artechne_link_historical_names_form_submit($form, &$form_state) {
+  // first page
+  if ($form_state['clicked_button']['#id'] == 'edit-submit-node-id') {
+    // keep track of where we are
+    $form_state['storage']['state'] = 'start_looping'; 
+    
+    // get node id and load session with transcription
+    $node_id = ($form['node_id']['#value']);
+    _artechne_link_historical_names_init_session($node_id);
+  }
+  elseif ($form_state['clicked_button']['#id'] == 'edit-submit-disambiguation') {
+    $current_word = $_SESSION['storage']['current_transcription'][$_SESSION['storage']['current_index']];
+        
+    $nids = array_filter($form_state['values']['historical_names']);
+    if (count($nids) > 0)  { // if we have checked boxes    
+      foreach ($nids as $nid) {
+        _artechne_link_historical_names_add_relation($current_word, $nid);
+      }
+    }
+    else {
+      _artechne_link_historical_names_add_new_historical_name($current_word);
+    }
+
+    if ($_SESSION['storage']['current_index'] < count($_SESSION['storage']['current_transcription']) - 1) {
+      $_SESSION['storage']['current_index'] = $_SESSION['storage']['current_index'] + 1;
+      $form_state['storage']['state'] = 'continue_looping'; 
+    }
+    else {
+      $form_state['storage']['state'] = 'stop_looping';
+    }
+  }
+  elseif ($form_state['clicked_button']['#id'] == 'edit-submit-restart') {
+    $form_state['storage']['state'] = null;
+  }
+  else {
+    dpm('WTF?');
+  }
+
+  // prevent default submit
+  $form_state["rebuild"] = TRUE;
+}
+
+/**
+ * Load a new session with a freshly storage.
+ */
+function _artechne_link_historical_names_init_session($node_id) {
+  $_SESSION['storage']['record_node_id'] = $node_id;
+  $_SESSION['storage']['relations_created'] = array();
+  $_SESSION['storage']['historical_names_created'] = array();
+  $_SESSION['storage']['words_already_checked'] = array();
+  $_SESSION['storage']['current_transcription'] = _artechne_link_historical_names_get_transcription($node_id);
+  $_SESSION['storage']['current_index'] = 0; 
+}
+
+/**
+ * Reset the current session
+ */
+function _artechne_link_historical_names_reset_session() {
+  $_SESSION['storage']['current_transcription'] = array();
+}
+
+/**
+ * Implements hook_permission().
+ * Adds a permission specifically for this module.
+ */
+function artechne_link_historical_names_permission() {
+  return array(
+    'link historical names' => array(
+      'title' => t('Access the Link Historical Names module functionality'),
+    )
+  );
+}
+
+/**
+ * Load a transcription text (as an array, split/exploded on spaces) based on node id
+ */
+function _artechne_link_historical_names_get_transcription($node_id) {
+  $result = array();
+  
+  $node = node_load($node_id);
+  $transcription = $node->field_transcription['und'][0]['value'];  
+
+  // find all tagged strings
+  $pattern = "~.\/[^.\/]*.\/~";
+  preg_match_all($pattern, $transcription, $tagged_historical_names, PREG_PATTERN_ORDER);
+ 
+  foreach ($tagged_historical_names[0] as $thn) {
+    array_push($result, str_replace(array(tag(), "\n", "\r"), '', $thn));
+  }
+
+  return $result;
+}
+
+/*
+* Replace all tags from the transcription
+*/
+function _artechne_link_historical_names_remove_tags() {
+  $record = node_load($_SESSION['storage']['record_node_id']);
+  $transcription_with = $record->field_transcription['und'][0]['value'];    
+  $record->field_transcription['und'][0]['value'] = str_replace(tag(), '', $transcription_with);    
+  node_save($record);    
+}
+
+/**
+ * Add a help button (and some text) to the module menu
+ */
+function artechne_link_historical_names_help($path, $arg) {
+  switch ($path) {
+    case "admin/help#artechne_link_historical_names":
+      return t("Custom module for Artechne that partly automates linking historical names to a record"); 
+      break; 
+  }
+}
+
+function _artechne_link_historical_names_get_historical_names($title) {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node')
+    ->entityCondition('bundle', 'appellation')
+    ->propertyCondition('title', $title, 'CONTAINS');          
+  $result = $query->execute();
+  
+  // dpm("Found " . count($result['node']) . " nodes\n");
+
+  if (isset($result['node'])) {
+    return $result['node'];
+  }
+  return array();
+}
+
+/*
+* Adds a new historical names. Stores these to display at the end.
+*/
+function _artechne_link_historical_names_add_new_historical_name($historical_name) {  
+  $a = new stdClass();
+  $a->title = $historical_name;
+  $a->type = 'appellation';
+  node_object_prepare($a); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+  $a->language = LANGUAGE_NONE; // Or e.g. 'en' if locale is enabled
+  $a->status = 0; //(1 or 0): published or not
+  $a->promote = 0; //(1 or 0): promoted to front page
+  $a->comment = 0; // 0 = comments disabled, 1 = read only, 2 = read/write
+
+  $a = node_submit($a); // Prepare node for saving
+  node_save($a);
+  
+  // keep track of created historical names to display them at the very end
+  $format = "<p>'%s' (<a target='_blank' href='/node/%s'>%s</a>)</p>";       
+  $hn_added =  sprintf($format, $historical_name, $a->nid, $a->nid);
+  array_push($_SESSION['storage']['historical_names_created'], $hn_added);
+
+  return $a->nid;
+}
+
+/**
+ * Add a relation if it does not exist. Stores added relations (to display these at the end).
+ */
+function  _artechne_link_historical_names_add_relation($current_word, $historical_name_nid) {        
+  $relation_type = 'appellation_recipes';
+  $record_node_id = $_SESSION['storage']['record_node_id'];
+  
+  $endpoints = array();
+  $endpoints[] = array('entity_type' => 'node', 'entity_id' => $historical_name_nid);
+  $endpoints[] = array('entity_type' => 'node', 'entity_id' => $record_node_id);
+
+  if (!relation_relation_exists($endpoints)) {
+    try {
+      $r = relation_create($relation_type, $endpoints);      
+      // $rid = relation_save($r);
+       _artechne_link_historical_names_keep_track_of_added_relations($current_word, $historical_name_nid);       
+    } catch (Exception $e) {
+      dpm('Caught exception: ',  $e->getMessage());
+    }
+  } 
+}
+
+function _artechne_link_historical_names_keep_track_of_added_relations($current_word, $historical_name_nid) {
+  $hn_node = node_load($historical_name_nid);
+  
+  // save formatted message to display at the end
+  $format = "<p>'%s' was linked to '%s' (<a target='_blank' href='/node/%s'>%s</a>)</p>";       
+  $relation_added =  sprintf($format, $current_word, $hn_node->title, $historical_name_nid, $historical_name_nid);
+  array_push($_SESSION['storage']['relations_created'], $relation_added);
+}
+
+function _artechne_link_historical_names_strip_whitespaces($line) {
+  return trim(str_replace(array("\r", "\n"), '', $line));
+}

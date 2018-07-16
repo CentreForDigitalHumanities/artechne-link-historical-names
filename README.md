@@ -7,4 +7,4 @@ More on how to create custom modules [here](https://www.drupal.org/docs/7/creati
 The module adds a tab under 'Content', 'Link Historical Names'. 
 It also adds a custom permissions (under 'People', the tab 'Permissions'), that can be used to enable the module only for certain users.
 
-More detail on how the code does its work exacty van be found in the `.module` file, which is plain php (but without the closing tag!!).
+More detail on how the code does its work exactly can be found in the `.module` file, which is just plain php (but without the closing tag!!).

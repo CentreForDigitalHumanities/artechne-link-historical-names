@@ -448,7 +448,7 @@ function  _artechne_link_historical_names_add_relation($current_word, $historica
   if (!relation_relation_exists($endpoints)) {
     try {
       $r = relation_create($relation_type, $endpoints);      
-      // $rid = relation_save($r);
+      $rid = relation_save($r);
        _artechne_link_historical_names_keep_track_of_added_relations($current_word, $historical_name_nid);       
     } catch (Exception $e) {
       dpm('Caught exception: ',  $e->getMessage());

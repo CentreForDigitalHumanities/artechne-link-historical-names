@@ -419,7 +419,7 @@ function _artechne_link_historical_names_add_new_historical_name($historical_nam
   $a->type = 'appellation';
   node_object_prepare($a); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
   $a->language = LANGUAGE_NONE; // Or e.g. 'en' if locale is enabled
-  $a->status = 0; //(1 or 0): published or not
+  $a->status = 1; //(1 or 0): published or not
   $a->promote = 0; //(1 or 0): promoted to front page
   $a->comment = 0; // 0 = comments disabled, 1 = read only, 2 = read/write
 

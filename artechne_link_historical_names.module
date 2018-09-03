@@ -7,26 +7,37 @@ ini_set('display_startup_errors', TRUE);
 /**
  * This is a custom module built for the Artechne project.
  * It allows users (with the right permissions) to semi-automatically link historical names to a record.
- * Users provide the node id for a Record, and the script will find Historical Names if they are tagged 
- * (e.g. 'texttexttext './historical name./' texttexttext). After collecting all tagged terms, it searches for 
- * the database for Historical Names with a title that contain this term.
+ * Users provide the node id for a Record, and the script will find Historical Names if they are tagged. 
+ * After collecting all tagged terms, it checks with the user if these terms are the ones that were expected.
+ * If they are, it searches the database for Historical Names with a title that contain each term.
  * If it finds an exact match, a relation between the Record and the Historical Name is added.
  * If an ambiguous result is found (i.e. a match but not an exact match), the user is asked for help to disambiguate.
  * If no results are found, a Historical Name for the current term is created and the relation added.
  * 
- * The module consists of a multistep form of three main steps.
+ * The module consists of a multistep form of four main steps.
  * 1) A form to collect the node id.
- * 2) A form to ask the user for help if needed
- * 3) A form to end the task (and possibly restart)
+ * 2) A form to check if the matches are what the user expected.
+ * 2) A form to ask the user for help if needed.
+ * 3) A form to end the task (and possibly restart).
  * 
  * Note that the Historical Names found in the transcription text are stored in a session variable, and
- * a loop is created over these terms. As a result step / form 2 can occur multiple times.
+ * a loop is created over these terms. As a result step / form 3 can occur multiple times.
  * The gist of the work to maintain this loop is done in the main form function and the form submit function.
  *
  */
 
-function tag() {
+/* The tags used by the artechne team to mark historical names in the transcription */
+function starttag() {
   return './';
+}
+
+function endtag() {
+  return '<';
+}
+
+/* The pattern (with the tags in it!) used to extract tagged historical names from the transcription.*/
+function pattern() {
+  return "~.\/[^<]*<~";
 }
 
 /**
@@ -61,6 +72,10 @@ function artechne_link_historical_names_form($form, &$form_state) {
     $form = _artechne_link_historical_names_form_collect_node_id($form_state);
   }
   else {
+    if ($form_state['storage']['state'] == 'check_matches') {
+      $form = _artechne_link_historical_names_form_check_matches($form_state, $_SESSION['storage']['current_transcription']);      
+    }
+
     if ($form_state['storage']['state'] == 'start_looping' | $form_state['storage']['state'] == 'continue_looping') {
       
       for ($i = $_SESSION['storage']['current_index']; $i <= count($_SESSION['storage']['current_transcription']); $i++) {
@@ -138,8 +153,8 @@ function _artechne_link_historical_names_form_collect_node_id($form_state) {
                 .' you wish to link historical names to. You can find the node id in the URL (i.e. a typical address looks like this:'
                 .' \'http://artechne.hum.uu.nl/node/86488\' where the number at the end is the node id.</p>'
                 .'<p>Note that this module will search through the transcription of the record found. It will look for terms'
-                .' surrounded by the tag \'' . tag() . '\' (i.e. a historical name in a text should look like this:'
-                .' \'textexttext ' . tag() . 'historical name' . tag() . ' texttexttext\'). Subsequently, it will search for historical names that'
+                .' surrounded by the tags \'' . starttag() . '\' and \'' . endtag() . '\' (i.e. a historical name in a text should look like this:'
+                .' \'textexttext ' . starttag() . 'historical name' . endtag() . ' texttexttext\'). Subsequently, it will search for historical names that'
                 .' contain the tagged word(s) in its title. If only one result is found and this matches exactly (cases are ignored), a relation'
                 .' will be added. If multiple matches are found, the module will ask for help with disambiguation. In case no'
                 .' matches with any historical names are found, a new historical name will be added, and a relation created.</p>'
@@ -162,7 +177,43 @@ function _artechne_link_historical_names_form_collect_node_id($form_state) {
 }
 
 /**
- * The second form, which may be repeatedly posted.
+ * The second form. Checks the matches found in the transcription with the user.
+*/
+function _artechne_link_historical_names_form_check_matches($form_state, $matches_found) {
+  $form = array();
+
+  $form['some_text'] = array(
+    '#markup' => '<h3>Please help me check what I found</h3>'
+  );
+
+  $form['explanation'] = array(
+    '#markup' => '<p>These are the historical names that were found in the transcription of the node you provided. Are they what you expected?</p>'
+  );
+
+  $format = "<p>'%s'</p>";
+  $matches = '';
+  foreach ($matches_found as $match) {
+    $matches = $matches . sprintf($format, $match);
+  }
+
+  $form['matches'] = array(
+    '#markup' => $matches
+  );
+
+  $form['submit_check_matches'] = array(
+    '#type' => 'submit',
+    '#value' => t('These are correct!'),
+  );
+
+  $form['go_back'] = array(
+    '#markup' => "<a target='_blank' href='javascript:history.go(-1)'>Go back</a>"
+  );
+
+  return $form;
+}
+
+/**
+ * The third form, which may be repeatedly posted.
  * This asks the user for help with disambiguation of the results found.
  */
 function _artechne_link_historical_names_form_ambiguous_result($form_state, $current_word, $matching_historical_names) {
@@ -205,7 +256,7 @@ function _artechne_link_historical_names_get_ambiguous_result_checkboxes($matchi
 }
 
 /**
- * The third and final form
+ * The fourth and final form
  */
 function _artechne_link_historical_names_form_end($form_state) {
   $form = array();
@@ -284,12 +335,15 @@ function artechne_link_historical_names_form_validate($form, &$form_state) {
 function artechne_link_historical_names_form_submit($form, &$form_state) {
   // first page
   if ($form_state['clicked_button']['#id'] == 'edit-submit-node-id') {
-    // keep track of where we are
-    $form_state['storage']['state'] = 'start_looping'; 
+    // keep track of where we are 
+    $form_state['storage']['state'] = 'check_matches';
     
     // get node id and load session with transcription
     $node_id = ($form['node_id']['#value']);
     _artechne_link_historical_names_init_session($node_id);
+  }
+  elseif ($form_state['clicked_button']['#id'] == 'edit-submit-check-matches') {
+    $form_state['storage']['state'] = 'start_looping';
   }
   elseif ($form_state['clicked_button']['#id'] == 'edit-submit-disambiguation') {
     $current_word = $_SESSION['storage']['current_transcription'][$_SESSION['storage']['current_index']];
@@ -363,12 +417,11 @@ function _artechne_link_historical_names_get_transcription($node_id) {
   $node = node_load($node_id);
   $transcription = $node->field_transcription['und'][0]['value'];  
 
-  // find all tagged strings
-  $pattern = "~.\/[^.\/]*.\/~";
-  preg_match_all($pattern, $transcription, $tagged_historical_names, PREG_PATTERN_ORDER);
+  // find all tagged strings  
+  preg_match_all(pattern(), $transcription, $tagged_historical_names, PREG_PATTERN_ORDER);
  
   foreach ($tagged_historical_names[0] as $thn) {
-    array_push($result, str_replace(array(tag(), "\n", "\r"), '', $thn));
+    array_push($result, str_replace(array(starttag(), endtag(), "\n", "\r"), '', $thn));
   }
 
   return $result;
@@ -380,7 +433,8 @@ function _artechne_link_historical_names_get_transcription($node_id) {
 function _artechne_link_historical_names_remove_tags() {
   $record = node_load($_SESSION['storage']['record_node_id']);
   $transcription_with = $record->field_transcription['und'][0]['value'];    
-  $record->field_transcription['und'][0]['value'] = str_replace(tag(), '', $transcription_with);    
+  $only_start_tags = str_replace(endtag(), '', $transcription_with);
+  $record->field_transcription['und'][0]['value'] = str_replace(starttag(), '', $only_start_tags);    
   node_save($record);    
 }
 
@@ -448,7 +502,7 @@ function  _artechne_link_historical_names_add_relation($current_word, $historica
   if (!relation_relation_exists($endpoints)) {
     try {
       $r = relation_create($relation_type, $endpoints);      
-      $rid = relation_save($r);
+      // $rid = relation_save($r);
        _artechne_link_historical_names_keep_track_of_added_relations($current_word, $historical_name_nid);       
     } catch (Exception $e) {
       dpm('Caught exception: ',  $e->getMessage());

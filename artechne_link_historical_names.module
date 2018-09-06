@@ -26,20 +26,32 @@ ini_set('display_startup_errors', TRUE);
  *
  */
 
+<<<<<<< HEAD
 /* The tags used by the artechne team to mark historical names in the transcription 
 * If you change any one of them, also edit the PATTERN!!!
 */
+=======
+/* The tags used by the artechne team to mark historical names in the transcription */
+>>>>>>> e264861fd78da168e4b6f39e0dd30fd788fcf0c3
 function starttag() {
   return './';
 }
 
 function endtag() {
+<<<<<<< HEAD
   return '</';
+=======
+  return '<';
+>>>>>>> e264861fd78da168e4b6f39e0dd30fd788fcf0c3
 }
 
 /* The pattern (with the tags in it!) used to extract tagged historical names from the transcription.*/
 function pattern() {
+<<<<<<< HEAD
   return "~.\/[^<\/]*<\/~";
+=======
+  return "~.\/[^<]*<~";
+>>>>>>> e264861fd78da168e4b6f39e0dd30fd788fcf0c3
 }
 
 /**
@@ -504,7 +516,7 @@ function  _artechne_link_historical_names_add_relation($current_word, $historica
   if (!relation_relation_exists($endpoints)) {
     try {
       $r = relation_create($relation_type, $endpoints);      
-      $rid = relation_save($r);
+      // $rid = relation_save($r);
        _artechne_link_historical_names_keep_track_of_added_relations($current_word, $historical_name_nid);       
     } catch (Exception $e) {
       dpm('Caught exception: ',  $e->getMessage());

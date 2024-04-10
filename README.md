@@ -1,5 +1,5 @@
 ### Link Historical Names
-A custom module for the Artechne project that adds the functionality to (semi-)automatically link Historical Names to records.
+A custom Drupal module for the [Artechne project](https://artechne.wp.hum.uu.nl/) that adds the functionality to (semi-)automatically link Historical Names to records.
 
 Modules, in Drupal (7), reside at `sites/all/modules`.
 More on how to create custom modules [here](https://www.drupal.org/docs/7/creating-custom-modules/getting-started).
